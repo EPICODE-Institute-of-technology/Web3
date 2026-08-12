@@ -1,0 +1,145 @@
+<!doctype html>
+<!--
+  ============================================================================
+   Read the native (SEP) balance of any address
+  ----------------------------------------------------------------------------
+   GOAL
+     Take an address typed by the user and show how much native test-ether it
+     holds on Sepolia, both in human units (SEP) and in raw wei.
+
+   NEW CONCEPTS
+     * Reading user input from a DOM <input> via its .value property.
+     * Attaching a click handler with element.onclick = async () => {...}.
+     * ethers.isAddress(...)  — cheap, OFFLINE validation of an address.
+     * provider.getBalance(...) — a read of native-coin balance (returns a bigint of wei).
+     * ethers.formatEther(...)  — divide a wei bigint by 10**18 for display.
+
+  HOW TO RUN
+     ES-module pages must be served over http:// (NOT opened as a file://).
+     (1) Use the Live Server extension
+     (2) From this folder run, e.g.:  python3 -m http.server 8000
+     then open  http://localhost:8000/01-hello.html
+  ============================================================================
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Read the balance of any address</title>
+    <style>
+      body {
+        font-family: -apple-system, sans-serif;
+        max-width: 720px;
+        margin: 2em auto;
+        padding: 0 1em;
+        color: #222;
+      }
+      h1 {
+        color: #3c3c5f;
+      }
+      input {
+        font-family: Consolas, monospace;
+        font-size: 13px;
+        padding: 6px 10px;
+        width: 60%;
+        border: 1px solid #ccd1db;
+        border-radius: 5px;
+      }
+      button {
+        background: #627eea;
+        color: #fff;
+        border: 0;
+        padding: 7px 14px;
+        border-radius: 5px;
+        font-weight: 600;
+        cursor: pointer;
+        margin-left: 6px;
+      }
+      pre {
+        background: #f3f5fa;
+        padding: 14px;
+        border-radius: 6px;
+        border-left: 4px solid #1abc9c;
+        font-size: 13px;
+        line-height: 1.5;
+        min-height: 100px;
+        white-space: pre-wrap;
+      }
+      .err {
+        color: #d73a49;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Sepolia balance lookup</h1>
+    <p>
+      Type any 0x-address (or an ENS name resolvable on mainnet) and press the
+      button.
+    </p>
+
+    <div>
+      <!-- An <input> holds text the user types; we read it later via .value.
+         The pre-filled value is Vitalik Buterin's well-known address, so the
+         page shows a non-zero result even before the student edits it. -->
+      <input
+        id="addr"
+        type="text"
+        value="0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+        placeholder="0x… or vitalik.eth"
+      />
+      <button id="go">Get balance</button>
+    </div>
+    <pre id="out"></pre>
+
+    <script type="module">
+      import { ethers } from "https://cdnjs.cloudflare.com/ajax/libs/ethers/6.7.0/ethers.min.js";
+
+      const out = document.getElementById("out");
+      const log = (m) => {
+        out.textContent += m + "\n";
+      };
+      const errs = (m) => {
+        out.innerHTML += `<span class="err">${m}</span>\n`;
+      };
+
+      // Same read-only provider pattern as before. One provider can serve many
+      // reads, so we create it once at module scope and reuse it on every click.
+      const provider = new ethers.JsonRpcProvider(
+        "https://ethereum-sepolia-rpc.publicnode.com",
+      );
+
+      // Assigning a function to element.onclick registers it as the click
+      // handler. We use an `async` arrow function because inside it we `await`
+      // a network call. The browser calls this function every time the button
+      // is pressed.
+      document.getElementById("go").onclick = async () => {
+        out.textContent = ""; // clear previous output
+        // Read the current text of the input box and trim stray spaces. `.value`
+        // is always the LIVE content, so we read it at click time, not earlier.
+        const raw = document.getElementById("addr").value.trim();
+
+        // Validate BEFORE hitting the network. isAddress checks the 0x + 40-hex
+        // shape (and the EIP-55 checksum if mixed-case). This runs entirely in
+        // the browser — no RPC call — so we fail fast on typos and save a request.
+        if (!ethers.isAddress(raw)) {
+          errs("'" + raw + "' is not a valid Ethereum address.");
+          return; // stop the handler early
+        }
+
+        try {
+          // getBalance returns the account's native-coin balance as a bigint of
+          // WEI (the smallest unit). On Sepolia the native coin is test-ETH,
+          // which we label "SEP". A bigint can hold the full 256-bit range
+          // exactly — never use a JS number for on-chain amounts.
+          const wei = await provider.getBalance(raw);
+          log("Address :  " + raw);
+          // formatEther divides by 10**18 and returns a decimal STRING for display.
+          log("Balance :  " + ethers.formatEther(wei) + " SEP");
+          // Printing the raw bigint shows what is actually stored on-chain.
+          log("        =  " + wei + " wei");
+        } catch (e) {
+          errs("Could not fetch balance: " + (e.shortMessage || e.message));
+        }
+      };
+    </script>
+  </body>
+</html>

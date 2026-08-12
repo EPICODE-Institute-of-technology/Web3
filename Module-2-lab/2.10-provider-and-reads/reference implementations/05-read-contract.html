@@ -1,0 +1,163 @@
+<!doctype html>
+<!--
+  ============================================================================
+   Read from a smart contract (the LINK ERC-20 on Sepolia)
+  ----------------------------------------------------------------------------
+   GOAL
+     Talk to an EXISTING smart contract for the first time. We point ethers at
+     the Chainlink LINK token (a standard ERC-20 already deployed on Sepolia)
+     and read three of its view functions: symbol, decimals and balanceOf.
+
+   NEW CONCEPTS
+     * ABI (Application Binary Interface) — the "menu" of functions a contract
+       exposes. Ethers needs it to know how to encode calls and decode results.
+     * Human-readable ABI — instead of verbose JSON you can list Solidity-style
+       signatures as plain strings; ethers parses them into callable methods.
+     * ethers.Contract(address, abi, provider) — a JS proxy object whose
+       methods mirror the contract's functions.
+     * "view" functions are FREE reads: no transaction, no gas, no wallet.
+     * ethers.formatUnits(value, decimals) — divide by 10**decimals (a token
+       may use any number of decimals, not always 18).
+
+   WHY LINK?
+     It is a real, already-deployed ERC-20 with non-zero balances, so this page
+     works without you deploying anything. You deploy your own token next, and
+     the pages that follow interact with it the same way.
+  ============================================================================
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Read from a smart contract (LINK on Sepolia)</title>
+    <style>
+      body {
+        font-family: -apple-system, sans-serif;
+        max-width: 720px;
+        margin: 2em auto;
+        padding: 0 1em;
+        color: #222;
+      }
+      h1 {
+        color: #3c3c5f;
+      }
+      input {
+        font-family: Consolas, monospace;
+        font-size: 13px;
+        padding: 6px 10px;
+        width: 60%;
+        border: 1px solid #ccd1db;
+        border-radius: 5px;
+      }
+      button {
+        background: #627eea;
+        color: #fff;
+        border: 0;
+        padding: 7px 14px;
+        border-radius: 5px;
+        font-weight: 600;
+        cursor: pointer;
+        margin-left: 6px;
+      }
+      pre {
+        background: #f3f5fa;
+        padding: 14px;
+        border-radius: 6px;
+        border-left: 4px solid #1abc9c;
+        font-size: 13px;
+        line-height: 1.5;
+        min-height: 100px;
+        white-space: pre-wrap;
+      }
+      .err {
+        color: #d73a49;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Read an ERC-20 from a contract</h1>
+    <p>
+      The Sepolia LINK token implements the ERC-20 ABI. We declare a 3-line
+      human-readable ABI, build a read-only <code>Contract</code> bound to a
+      Provider, and call three view functions in parallel.
+    </p>
+
+    <div>
+      <input
+        id="addr"
+        type="text"
+        value="0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+        placeholder="0x… address to inspect"
+      />
+      <button id="go">Get LINK balance</button>
+    </div>
+    <pre id="out"></pre>
+
+    <script type="module">
+      import { ethers } from "https://cdnjs.cloudflare.com/ajax/libs/ethers/6.7.0/ethers.min.js";
+
+      // The on-chain ADDRESS of the contract we want to read. This is Chainlink's
+      // official LINK token deployment on the Sepolia test network.
+      const LINK = "0x779877A7B0D9E8603169DdbD7836e478b4624789";
+
+      // The ABI tells ethers which functions exist and how to encode/decode them.
+      // This is the "human-readable" form: each entry is a Solidity-style
+      // signature. We only list the THREE functions we actually call — an ABI
+      // need not be complete, just sufficient for the methods you use.
+      //   "view" = read-only (no state change, no gas).
+      //   "returns (uint256)" etc. tells ethers how to decode the reply.
+      const erc20Abi = [
+        "function balanceOf(address) view returns (uint256)",
+        "function decimals()          view returns (uint8)",
+        "function symbol()            view returns (string)",
+      ];
+
+      //import abi from "./CourseToken.abi.json" with { type: "json" };
+
+      // Read-only provider (no wallet needed — we are only reading).
+      const provider = new ethers.JsonRpcProvider(
+        "https://ethereum-sepolia-rpc.publicnode.com",
+      );
+
+      // Contract(address, abi, runner). The "runner" here is a PROVIDER, so this
+      // contract object can only READ. (Bind a SIGNER instead, to
+      // also send state-changing transactions.) `link.balanceOf`, `link.symbol`,
+      // etc. now exist as async JS methods generated from the ABI.
+      const link = new ethers.Contract(LINK, erc20Abi, provider);
+
+      const out = document.getElementById("out");
+      const log = (m) => {
+        out.textContent += m + "\n";
+      };
+      const errs = (m) => {
+        out.innerHTML += `<span class="err">${m}</span>\n`;
+      };
+
+      document.getElementById("go").onclick = async () => {
+        out.textContent = "";
+        const who = document.getElementById("addr").value.trim();
+        if (!ethers.isAddress(who)) return errs("Bad address.");
+
+        try {
+          // Three independent view calls fired in parallel with Promise.all.
+          // Calling a contract method returns a Promise of the decoded result:
+          //   balanceOf → a bigint (raw base units)
+          //   decimals  → a number/bigint (how many decimals this token uses)
+          //   symbol    → a string ("LINK")
+          const [bal, dec, sym] = await Promise.all([
+            link.balanceOf(who),
+            link.decimals(),
+            link.symbol(),
+          ]);
+          log("Token   :  " + sym + "  (" + dec + " decimals)");
+          log("Address :  " + who);
+          // formatUnits uses the token's OWN decimals, not a hard-coded 18 —
+          // important, since e.g. USDC uses 6. Always read decimals() per token.
+          log("Balance :  " + ethers.formatUnits(bal, dec) + " " + sym);
+          log("        =  " + bal + " base units");
+        } catch (e) {
+          errs(e.shortMessage || e.message);
+        }
+      };
+    </script>
+  </body>
+</html>

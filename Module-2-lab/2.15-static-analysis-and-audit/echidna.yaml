@@ -1,0 +1,16 @@
+# Minimal Echidna config for the Lecture 2.15 property tests (RPSProperties.sol).
+#
+# Echidna is a separate tool from Foundry. Install the release binary from
+# https://github.com/crytic/echidna, then run from THIS folder:
+#
+#   echidna "reference implementations/RPSProperties.sol" --contract RPSProperties --config echidna.yaml
+#
+# It deploys RPSProperties, fires random call sequences, and after every step
+# checks that each echidna_* view still returns true.
+
+testMode: property     # every echidna_* function must stay true
+testLimit: 50000       # total transactions to attempt
+seqLen: 50             # max calls per sequence
+shrinkLimit: 5000      # effort spent minimising any counter-example
+# The contracts pin solc ^0.8.20; crytic-compile picks solc up from PATH
+# (no remappings — RPSProperties imports only ./TimedFairRPS.sol).

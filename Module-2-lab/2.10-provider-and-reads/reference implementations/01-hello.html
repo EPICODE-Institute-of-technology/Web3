@@ -1,0 +1,144 @@
+<!doctype html>
+<!--
+  ============================================================================
+   "Hello Ethers": a read-only ping to the blockchain
+  ----------------------------------------------------------------------------
+   GOAL
+     Connect to the Sepolia test network from a plain web page and print three
+     pieces of live data: the latest block number, the network identity, and
+     the current gas price. No wallet, no transaction, no money — only reads.
+
+   NEW CONCEPTS
+     * ethers.JsonRpcProvider — a read-only connection to an Ethereum node.
+     * Promise.all            — run several async reads in parallel.
+     * ethers.formatUnits     — turn a raw integer (wei/gwei) into a readable string.
+
+   HOW TO RUN
+     ES-module pages must be served over http:// (NOT opened as a file://).
+     (1) Use the Live Server extension
+     (2) From this folder run, e.g.:  python3 -m http.server 8000
+     then open  http://localhost:8000/01-hello.html
+  ============================================================================
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Hello Ethers</title>
+    <style>
+      /* Pure cosmetics — none of the CSS affects the ethers logic. */
+      body {
+        font-family: -apple-system, sans-serif;
+        max-width: 720px;
+        margin: 2em auto;
+        padding: 0 1em;
+        color: #222;
+      }
+      h1 {
+        color: #3c3c5f;
+      }
+      pre {
+        background: #f3f5fa;
+        padding: 14px;
+        border-radius: 6px;
+        border-left: 4px solid #1abc9c;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .err {
+        color: #d73a49;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Hello Ethers</h1>
+    <p>
+      A read-only ping to a public Sepolia RPC endpoint. No wallet involved.
+    </p>
+
+    <!-- The <pre> below is our "console on the page": the script writes its
+       output here by setting its .textContent. The id="out" is the handle
+       the script uses to find this element via document.getElementById. -->
+    <pre id="out">Loading…</pre>
+
+    <!-- type="module" is REQUIRED to use `import`. It also makes the script run
+       in strict mode, defer until the HTML is parsed, and allow top-level
+       await (we use `await` directly below, outside any function). -->
+    <script type="module">
+      // Import the `ethers` object from a pinned CDN build. Pinning the exact
+      // version (6.7.0) means the page will not silently break when a new major
+      // release ships. In a Node project you would instead `npm install ethers`.
+      import { ethers } from "https://cdnjs.cloudflare.com/ajax/libs/ethers/6.7.0/ethers.min.js";
+
+      // Grab the output element once and define two tiny helpers so the rest of
+      // the code reads cleanly. `log` appends a normal line; `errs` appends a
+      // red line. textContent writes safe plain text; innerHTML lets us inject
+      // the <span class="err"> wrapper for colour.
+      const out = document.getElementById("out");
+      out.textContent = ""; // clear the "Loading…" placeholder
+      const log = (m) => {
+        out.textContent += m + "\n";
+      }; // arrow function = compact anonymous function
+      const errs = (m) => {
+        out.innerHTML += `<span class="err">${m}</span>\n`;
+      };
+
+      console.log(ethers);
+      // try/catch: any network failure (node down, no internet) rejects a
+      // Promise, and `await` turns that rejection into a thrown error we catch.
+      try {
+        log("ethers " + ethers.version + " loaded.");
+
+        // (1) A PROVIDER is ethers' object for talking to an Ethereum node.
+        //     JsonRpcProvider opens a read-only HTTPS connection — it can READ
+        //     chain data but cannot sign or send transactions (no private key).
+        //     The URL is a public Sepolia RPC endpoint operated by PublicNode.
+        const provider = new ethers.JsonRpcProvider(
+          "https://ethereum-sepolia-rpc.publicnode.com",
+        );
+
+        // (2) Ask the node three INDEPENDENT questions. Each call is async and
+        //     would normally cost one network round-trip. Done sequentially with
+        //     three separate `await`s they would run one-after-another; wrapping
+        //     them in Promise.all fires all three at once and resolves when the
+        //     slowest reply arrives. The array on the left "destructures" the
+        //     three results into three named variables in order.
+        const [blockNumber, network, feeData] = await Promise.all([
+          provider.getBlockNumber(), // → number: height of the latest block
+          provider.getNetwork(), // → { name, chainId, ... }
+          provider.getFeeData(), // → { gasPrice, maxFeePerGas, ... } as bigints
+        ]);
+
+        // Same of Promise.all
+        //const blockNumber = await provider.getBlockNumber();
+        //const network = await provider.getNetwork();
+        //const feeData = await provider.getFeeData();
+
+        // network.chainId is a bigint (Sepolia = 11155111n). String concatenation
+        // converts it for display. formatUnits(value, "gwei") divides a wei
+        // bigint by 10**9 and returns a human-readable string (1 gwei = 1e-9 ETH).
+        log(
+          "Connected to:   " +
+            network.name +
+            "  (chainId " +
+            network.chainId +
+            ")",
+        );
+        log("Latest block:   " + blockNumber);
+        log(
+          "Gas price:      " +
+            ethers.formatUnits(feeData.gasPrice, "gwei") +
+            " gwei",
+        );
+        log(
+          "Max fee / gas:  " +
+            ethers.formatUnits(feeData.maxFeePerGas, "gwei") +
+            " gwei",
+        );
+      } catch (e) {
+        // Ethers attaches a concise `shortMessage`; we fall back to the raw
+        // `message` if it is absent. Showing both keeps the demo robust.
+        errs("RPC error: " + (e.shortMessage || e.message));
+      }
+    </script>
+  </body>
+</html>

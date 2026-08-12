@@ -1,0 +1,123 @@
+<!doctype html>
+<!--
+  ============================================================================
+   Connect a real wallet (MetaMask)
+  ----------------------------------------------------------------------------
+   GOAL
+     Move from a read-only RPC provider to the user's BROWSER WALLET. We ask
+     MetaMask for permission, then read the connected account, the active
+     network, and the account's balance. Still NO transaction is sent.
+
+   NEW CONCEPTS
+     * window.ethereum — the EIP-1193 object MetaMask injects into the page.
+     * ethers.BrowserProvider — wraps window.ethereum so ethers can talk to it.
+     * eth_requestAccounts — the JSON-RPC method that opens the connect pop-up.
+     * Signer vs Provider — a Signer represents one account that CAN sign.
+     * Reacting to accountsChanged / chainChanged events from the wallet.
+
+   PREREQUISITE
+     The MetaMask browser extension must be installed and set to the Sepolia
+     network. Get free test-ETH from a Sepolia faucet first.
+  ============================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Connect MetaMask</title>
+  <style>
+    body  { font-family: -apple-system, sans-serif; max-width: 720px; margin: 2em auto; padding: 0 1em; color: #222; }
+    h1    { color: #3C3C5F; }
+    button{ background: #627EEA; color: #fff; border: 0; padding: 8px 16px;
+            border-radius: 5px; font-weight: 600; cursor: pointer; }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    pre   { background: #F3F5FA; padding: 14px; border-radius: 6px;
+            border-left: 4px solid #1ABC9C; font-size: 13px; line-height: 1.5;
+            min-height: 100px; white-space: pre-wrap; }
+    .err  { color: #D73A49; }
+    .ok   { color: #138a64; }
+  </style>
+</head>
+<body>
+  <h1>Connect MetaMask</h1>
+  <p>The EIP-1193 handshake: ask MetaMask for the user's address and the active network.
+     The page does not yet send any transaction.</p>
+
+  <button id="btn-connect">Connect wallet</button>
+  <pre id="out">Press the button.</pre>
+
+  <script type="module">
+    import { ethers } from
+      "https://cdnjs.cloudflare.com/ajax/libs/ethers/6.7.0/ethers.min.js";
+
+    const out  = document.getElementById("out");
+    const log  = (m) => { out.textContent += m + "\n"; };
+    const ok   = (m) => { out.innerHTML  += `<span class="ok">${m}</span>\n`; };   // green line
+    const errs = (m) => { out.innerHTML  += `<span class="err">${m}</span>\n`; };  // red line
+
+    // Connecting touches the wallet, which is a user action, so we put it
+    // behind a button rather than running it on page load.
+    document.getElementById("btn-connect").onclick = async () => {
+      out.textContent = "";
+
+      // MetaMask injects a global object called `window.ethereum`. If it is
+      // missing, no compatible wallet is installed — there is nothing to talk to.
+      if (!window.ethereum) {
+        errs("window.ethereum is not present. Install MetaMask first.");
+        return;
+      }
+
+      try {
+        // (1) Wrap the injected EIP-1193 object in a BrowserProvider. Unlike
+        //     the read-only JsonRpcProvider, a BrowserProvider can both READ
+        //     chain data AND request signatures, because it routes through the
+        //     wallet that holds the user's private key.
+        const provider = new ethers.BrowserProvider(window.ethereum);
+
+        // (2) Ask the wallet for permission to see the user's accounts. This
+        //     low-level JSON-RPC call ("eth_requestAccounts") is what makes the
+        //     MetaMask pop-up appear. If the user approves, it resolves with
+        //     the list of authorised addresses; if they reject, it throws.
+        const accounts = await provider.send("eth_requestAccounts", []);
+        ok("Connected.");
+
+        // (3) A SIGNER represents one specific account that is able to sign
+        //     and send transactions. getSigner() returns the account the user
+        //     currently has selected in MetaMask. We then read a few facts:
+        const signer   = await provider.getSigner();
+        const address  = await signer.getAddress();           // the 0x… account address
+        const network  = await provider.getNetwork();         // { name, chainId, ... }
+        const balance  = await provider.getBalance(address);  // native balance, in wei
+
+        log("Account:   " + address);
+        log("Network:   " + network.name + "  (chainId " + network.chainId + ")");
+        // chainId 11155111 IS Sepolia; we label its coin "SEP", otherwise "ETH".
+        log("Balance:   " + ethers.formatEther(balance) + " " +
+            (Number(network.chainId) === 11155111 ? "SEP" : "ETH"));
+
+        // Guard rail: the whole module assumes Sepolia. Warn loudly otherwise,
+        // because a transaction sent on the wrong network will not behave.
+        if (Number(network.chainId) !== 11155111) {
+          errs("WARNING: you are not on Sepolia. Switch the network in MetaMask.");
+        }
+
+        // (4) The user can change account or network INSIDE MetaMask at any
+        //     time. The wallet fires these events when they do. The simplest
+        //     robust response in a teaching demo is to reload the page so all
+        //     state is rebuilt from scratch with the new account/network.
+        window.ethereum.on("accountsChanged", () => location.reload());
+        window.ethereum.on("chainChanged",    () => location.reload());
+
+      } catch (err) {
+        // EIP-1193 uses error code 4001 for "user rejected"; ethers also
+        // normalises it to the string "ACTION_REJECTED". We treat both as the
+        // same friendly, non-alarming message.
+        if (err.code === "ACTION_REJECTED" || err.code === 4001) {
+          errs("You declined the connection request. Press the button to try again.");
+        } else {
+          errs("Unexpected error: " + (err.shortMessage || err.message));
+        }
+      }
+    };
+  </script>
+</body>
+</html>

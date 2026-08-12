@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Run the WRITE slide code (2.11–2.12) — needs MetaMask</title>
+<!--
+  The WRITE code on the slides needs a Signer, and a Signer needs a wallet.
+  So this code can only run in a BROWSER that has MetaMask, on Sepolia, with a
+  little test ETH. It cannot run in Node or in a plain page.
+
+  This page contains, verbatim as far as possible, the code from:
+    SLD18  — Writing: send a transaction  (BrowserProvider, getSigner, sendTransaction)
+    SLD11  — the write half of the Contract (transfer, staticCall, estimateGas)
+    SLD21  — Handling the failure cases    (try / catch on err.code)
+  The slide's blanks (recipient, token, amount) are the input fields below.
+
+  BEFORE YOU START: install MetaMask, switch it to the Sepolia test network,
+  and fund the account from a Sepolia faucet. Then open this file in the browser.
+-->
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+<style>
+  body{font-family:system-ui,sans-serif;max-width:760px;margin:2rem auto;padding:0 1rem;color:#19212f}
+  h2{color:#d60077;font-size:1rem;margin-top:1.6rem}
+  label{display:block;font-weight:600;margin:.6rem 0 .2rem}
+  input{width:100%;padding:.5rem;box-sizing:border-box;font-family:monospace}
+  button{padding:.6rem 1rem;margin-top:.8rem;border-radius:6px;border:1px solid #19212f;background:#19212f;color:#fff;cursor:pointer}
+  pre{background:#f4f4f6;padding:1rem;border-radius:8px;white-space:pre-wrap;word-break:break-word;min-height:2rem}
+</style>
+</head>
+<body>
+<h1>Run the write slide code</h1>
+<button id="connect">Connect MetaMask</button>
+
+<h2>SLD18 — send a Sepolia ETH transaction</h2>
+<label>Recipient address</label>
+<input id="to" placeholder="0x…">
+<button id="send">Send 0.001 ETH</button>
+
+<h2>SLD11 + SLD21 — transfer an ERC-20 token (try/catch on the error code)</h2>
+<label>Token address (e.g. your deployed CourseToken)</label>
+<input id="token" placeholder="0x…">
+<label>Recipient</label>
+<input id="trecipient" placeholder="0x…">
+<label>Amount (in whole tokens)</label>
+<input id="amount" value="1">
+<button id="transfer">staticCall → estimateGas → transfer</button>
+
+<h2>Output</h2>
+<pre id="log">Not connected.</pre>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const log = (m) => { $("log").textContent += (typeof m === "string" ? m : JSON.stringify(m)) + "\n"; };
+let signer;
+
+// ---- SLD18: the connect handshake, verbatim ----
+async function connect() {
+  if (!window.ethereum) return log("MetaMask not found. Install it, then reload.");
+  const provider = new ethers.BrowserProvider(window.ethereum);
+  await provider.send("eth_requestAccounts", []);   // EIP-1193 connect
+  signer = await provider.getSigner();
+  const net = await provider.getNetwork();
+  $("log").textContent = "";
+  log("Connected: " + await signer.getAddress());
+  log("Network chainId: " + net.chainId + (net.chainId === 11155111n ? " (Sepolia)" : " — switch to Sepolia!"));
+}
+
+// ---- SLD18: send a transaction ----
+async function send() {
+  if (!signer) return log("Connect first.");
+  try {
+    const tx = await signer.sendTransaction({
+      to: $("to").value.trim(),
+      value: ethers.parseEther("0.001")
+    });
+    log("sent: " + tx.hash + " — waiting…");
+    const receipt = await tx.wait();          // mined
+    log("mined. status=" + receipt.status + " gasUsed=" + receipt.gasUsed);
+  } catch (err) { log("error: " + (err.shortMessage || err.code || err.message)); }
+}
+
+// ---- SLD11 (write) wrapped in SLD21 (error handling) ----
+async function transfer() {
+  if (!signer) return log("Connect first.");
+  const abi = [
+    "function decimals() view returns (uint8)",
+    "function transfer(address to, uint256 value) returns (bool)"
+  ];
+  const c  = new ethers.Contract($("token").value.trim(), abi, signer);   // runner = Signer
+  const to = $("trecipient").value.trim();
+  const v  = ethers.parseUnits($("amount").value.trim(), await c.decimals());
+  try {
+    // preview WITHOUT sending (SLD11):
+    await c.transfer.staticCall(to, v);                 // would it succeed?
+    const gas = await c.transfer.estimateGas(to, v);    // what would it cost?
+    log("staticCall ok; estimateGas = " + gas);
+    // now really send (SLD11):
+    const tx = await c.transfer(to, v);
+    log("sent: " + tx.hash + " — waiting…");
+    const receipt = await tx.wait();
+    log("mined. status=" + receipt.status);
+  } catch (err) {                                        // SLD21: inspect the code
+    if (err.code === "ACTION_REJECTED")      log("You cancelled the request — nothing was sent.");
+    else if (err.code === "CALL_EXCEPTION")  log("The contract reverted (e.g. balance too low).");
+    else                                     log("Network or other error: " + (err.shortMessage || err.message));
+  }
+}
+
+$("connect").onclick  = connect;
+$("send").onclick     = send;
+$("transfer").onclick = transfer;
+</script>
+</body>
+</html>

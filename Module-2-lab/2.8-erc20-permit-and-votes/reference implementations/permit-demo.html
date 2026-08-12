@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ERC-20 Permit — Sign &amp; Submit (Lecture 2.8)</title>
+<!-- ethers.js loaded from a CDN: nothing to install, `ethers` is a global. -->
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; color:#19212f; }
+  h1 { color:#19212f; } h2 { margin-top:1.6rem; font-size:1.05rem; color:#d60077; }
+  .step { border:1px solid #ddd; border-radius:8px; padding:1rem; margin:1rem 0; }
+  label { display:block; font-weight:600; margin:.6rem 0 .2rem; }
+  input { width:100%; padding:.5rem; box-sizing:border-box; font-family:monospace; }
+  button { padding:.6rem 1rem; margin-top:.8rem; font-size:1rem; cursor:pointer; border-radius:6px; border:1px solid #19212f; background:#19212f; color:#fff; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  pre { background:#f4f4f6; padding:1rem; border-radius:8px; white-space:pre-wrap; word-break:break-word; min-height:2rem; }
+  .note { font-size:.9rem; color:#555; }
+  code { background:#f4f4f6; padding:.1rem .3rem; border-radius:3px; }
+</style>
+</head>
+<body>
+
+<h1>ERC-20 Permit — sign &amp; submit</h1>
+<p>This page runs the <strong>EIP-2612 permit</strong> flow for you. The token owner signs an
+approval <em>off-chain</em> (no gas, no transaction), and anyone submits that signature on-chain.
+You do not need to know ethers or any library — just fill the fields and click the buttons in order.</p>
+
+<div class="step">
+<h2>Before you start</h2>
+<ol>
+  <li>Deploy <code>PermitToken.sol</code> from the lab to a network MetaMask can reach
+      (<strong>Sepolia</strong>, or a local chain). The Remix VM will <em>not</em> work here,
+      because MetaMask cannot sign for its accounts.</li>
+  <li>Have <strong>MetaMask</strong> installed, on the same network, with a little test ETH in the
+      account that will submit.</li>
+</ol>
+</div>
+
+<div class="step">
+<h2>Step 0 — Connect</h2>
+<button id="connect">Connect MetaMask</button>
+<div class="note">The connected account is the <strong>owner</strong> who will sign.</div>
+</div>
+
+<div class="step">
+<h2>Step 1 — Details</h2>
+<label>Token address (your deployed PermitToken)</label>
+<input id="token" placeholder="0x...">
+<label>Spender address (who may spend the owner's tokens)</label>
+<input id="spender" placeholder="0x... (e.g. a second account)">
+<label>Value (in whole tokens)</label>
+<input id="value" value="100">
+</div>
+
+<div class="step">
+<h2>Step 2 — Sign (owner, no gas)</h2>
+<button id="sign" disabled>Sign permit</button>
+<div class="note">MetaMask shows a <em>signature</em> request, not a transaction. Nothing is sent, nothing is paid.</div>
+</div>
+
+<div class="step">
+<h2>Step 3 — Submit (anyone)</h2>
+<div class="note">To show that the owner paid no gas, you may now <strong>switch MetaMask to a
+different account</strong> before submitting. That account pays the gas and sends the transaction.</div>
+<button id="submit" disabled>Submit permit</button>
+</div>
+
+<h2>Output</h2>
+<pre id="log">Not connected.</pre>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const log = (m) => { $("log").textContent += (typeof m === "string" ? m : JSON.stringify(m, null, 2)) + "\n"; };
+const clear = () => { $("log").textContent = ""; };
+
+let provider, ownerAddr, stored = null;
+
+// EIP-712 type of the Permit message (fixed by EIP-2612).
+const PERMIT_TYPES = { Permit: [
+  { name: "owner",    type: "address" },
+  { name: "spender",  type: "address" },
+  { name: "value",    type: "uint256" },
+  { name: "nonce",    type: "uint256" },
+  { name: "deadline", type: "uint256" },
+]};
+
+async function connect() {
+  try {
+    if (!window.ethereum) return log("MetaMask not found. Install it and reload.");
+    provider = new ethers.BrowserProvider(window.ethereum);
+    await provider.send("eth_requestAccounts", []);
+    const signer = await provider.getSigner();
+    ownerAddr = await signer.getAddress();
+    const net = await provider.getNetwork();
+    clear();
+    log("Connected as owner: " + ownerAddr);
+    log("Network chainId: " + net.chainId.toString());
+    $("sign").disabled = false;
+  } catch (e) { log("Error: " + (e.shortMessage || e.message)); }
+}
+
+async function sign() {
+  try {
+    const tokenAddr = $("token").value.trim();
+    const spender   = $("spender").value.trim();
+    if (!ethers.isAddress(tokenAddr)) return log("Enter a valid token address.");
+    if (!ethers.isAddress(spender))   return log("Enter a valid spender address.");
+
+    const abi = [
+      "function name() view returns (string)",
+      "function decimals() view returns (uint8)",
+      "function nonces(address) view returns (uint256)"
+    ];
+    const token   = new ethers.Contract(tokenAddr, abi, provider);
+    const signer  = await provider.getSigner();      // the owner
+    const decimals = await token.decimals();
+    const value   = ethers.parseUnits($("value").value.trim(), decimals);
+    const nonce   = await token.nonces(ownerAddr);
+    const deadline = Math.floor(Date.now() / 1000) + 3600;   // valid for 1 hour
+    const net     = await provider.getNetwork();
+
+    // The EIP-712 domain of an OpenZeppelin ERC20Permit token: name from the
+    // constructor, version "1", the current chain, and the token's own address.
+    const domain = { name: await token.name(), version: "1", chainId: net.chainId, verifyingContract: tokenAddr };
+    const message = { owner: ownerAddr, spender, value, nonce, deadline };
+
+    log("\nRequesting a signature from the owner...");
+    const sigHex = await signer.signTypedData(domain, PERMIT_TYPES, message);
+    const sig = ethers.Signature.from(sigHex);
+
+    stored = { token: tokenAddr, owner: ownerAddr, spender, value: value.toString(), deadline, v: sig.v, r: sig.r, s: sig.s };
+    log("Signed. No transaction was sent and no gas was paid.");
+    log(stored);
+    $("submit").disabled = false;
+  } catch (e) { log("Error: " + (e.shortMessage || e.message)); }
+}
+
+async function submit() {
+  try {
+    if (!stored) return log("Sign first (Step 2).");
+    // Re-read the CURRENT account, so if you switched in MetaMask, that account submits.
+    const p2 = new ethers.BrowserProvider(window.ethereum);
+    await p2.send("eth_requestAccounts", []);
+    const submitter = await (await p2.getSigner()).getAddress();
+    const abi = [
+      "function permit(address,address,uint256,uint256,uint8,bytes32,bytes32)",
+      "function allowance(address,address) view returns (uint256)",
+      "function nonces(address) view returns (uint256)"
+    ];
+    const token = new ethers.Contract(stored.token, abi, await p2.getSigner());
+
+    log("\nSubmitting the permit from: " + submitter);
+    const tx = await token.permit(stored.owner, stored.spender, stored.value, stored.deadline, stored.v, stored.r, stored.s);
+    log("tx sent: " + tx.hash + " (waiting for confirmation...)");
+    await tx.wait();
+
+    const allowance = await token.allowance(stored.owner, stored.spender);
+    const nonce = await token.nonces(stored.owner);
+    log("Confirmed.");
+    log("allowance(owner -> spender) = " + allowance.toString());
+    log("nonce(owner) = " + nonce.toString() + "  (it went up by one)");
+    log("\nThe owner never sent a transaction, yet the allowance is set. That is the point of permit.");
+  } catch (e) { log("Error: " + (e.shortMessage || e.message)); }
+}
+
+$("connect").onclick = connect;
+$("sign").onclick = sign;
+$("submit").onclick = submit;
+</script>
+</body>
+</html>

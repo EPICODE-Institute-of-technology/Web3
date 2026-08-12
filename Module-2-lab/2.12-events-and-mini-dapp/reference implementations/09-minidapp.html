@@ -1,0 +1,590 @@
+<!doctype html>
+<!--
+  ============================================================================
+   A complete mini-dApp (the earlier pages combined)
+  ----------------------------------------------------------------------------
+   GOAL
+     Assemble the whole module into one page: connect MetaMask, show the
+     account/network/role as status badges, read balances and token metadata,
+     perform transfer/burn/mint, and stream live Transfer events — all with
+     defensive error handling and a scrolling activity log.
+
+   WHAT TO STUDY HERE
+     * Using TWO providers at once:
+         - a BrowserProvider (via MetaMask) for the user's WRITES, and
+         - a WebSocketProvider for the live event FEED.
+       Browser-injected providers cannot push events reliably, so we open a
+       separate socket purely for listening.
+     * Deriving a "role" (owner vs holder) by comparing the connected address
+       to the contract's owner() and enabling/disabling UI accordingly.
+     * One shared handleErr() that maps ethers error codes to friendly text.
+     * Auto-refreshing balances when a live event involves the current account.
+
+   BEFORE YOU RUN
+     Replace the TOKEN placeholder below with your deployed CourseToken address (the page
+     refuses to connect until you do, and tells you so).
+  ============================================================================
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>A complete mini-dApp (CourseToken)</title>
+    <style>
+      /* ── Presentation only. The dApp logic lives in the <script> below. ── */
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        font-family: -apple-system, sans-serif;
+        max-width: 880px;
+        margin: 1.6em auto;
+        padding: 0 1em;
+        color: #2b2d42;
+      }
+      header {
+        background: #2a2a45;
+        color: #fff;
+        padding: 12px 18px;
+        border-radius: 8px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      header h1 {
+        margin: 0;
+        font-family: Georgia, serif;
+        font-size: 20px;
+      }
+      header .badges {
+        display: flex;
+        gap: 8px;
+      }
+      .badge {
+        font-family: Consolas, monospace;
+        font-size: 11px;
+        padding: 3px 9px;
+        border-radius: 999px;
+        background: #3c3c5f;
+        color: #e2e5ee;
+      }
+      .badge.ok {
+        background: #1abc9c;
+        color: #fff;
+      }
+      .badge.warn {
+        background: #f5b744;
+        color: #2a2a45;
+      }
+      .badge.error {
+        background: #d73a49;
+        color: #fff;
+      }
+
+      .card {
+        background: #fff;
+        margin: 14px 0;
+        padding: 16px 20px;
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+      }
+      .card h2 {
+        font-family: Georgia, serif;
+        color: #3c3c5f;
+        margin: 0 0 10px 0;
+        font-size: 17px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+      }
+      .grid > div {
+        background: #f3f5fa;
+        padding: 8px 12px;
+        border-radius: 6px;
+        font-size: 13px;
+      }
+      .label {
+        display: block;
+        font-size: 11px;
+        color: #8892a0;
+        margin-bottom: 2px;
+      }
+      .big {
+        font-family: Consolas, monospace;
+        font-size: 28px;
+        color: #3c3c5f;
+        margin: 0.3em 0;
+      }
+
+      button {
+        background: #627eea;
+        color: #fff;
+        border: 0;
+        padding: 7px 14px;
+        border-radius: 5px;
+        font-weight: 600;
+        cursor: pointer;
+        margin-right: 6px;
+      }
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      input {
+        font-family: Consolas, monospace;
+        font-size: 13px;
+        padding: 6px 10px;
+        border: 1px solid #ccd1db;
+        border-radius: 5px;
+      }
+
+      .row {
+        margin: 8px 0;
+      }
+      .row .label {
+        margin-right: 6px;
+      }
+      .owner-only {
+        border-left: 3px solid #f5b744;
+        padding-left: 10px;
+      }
+      .hint {
+        font-size: 11px;
+        color: #8892a0;
+        margin-top: 4px;
+      }
+
+      pre {
+        background: #2a2a45;
+        color: #e2e5ee;
+        padding: 12px 14px;
+        border-radius: 6px;
+        font-size: 12px;
+        min-height: 90px;
+        max-height: 260px;
+        overflow: auto;
+        white-space: pre-wrap;
+      }
+      pre .err {
+        color: #ffb4b4;
+      }
+      pre .ok {
+        color: #c6f0d6;
+      }
+      pre .live {
+        color: #ffd46e;
+      }
+      pre .mint {
+        color: #6ee6c5;
+      }
+      pre .burn {
+        color: #ff9f9f;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- The status bar. Each <span> has an id so the script can update its text
+       and colour (network, role, account) as the connection state changes. -->
+    <header>
+      <h1>CourseToken mini-dApp</h1>
+      <div class="badges">
+        <span id="b-net" class="badge">no network</span>
+        <span id="b-role" class="badge">—</span>
+        <span id="b-acct" class="badge">no wallet</span>
+      </div>
+    </header>
+
+    <!-- Connection card: connect button + a 3-cell grid of account facts. -->
+    <section class="card">
+      <h2>Connection</h2>
+      <button id="btn-connect">Connect MetaMask</button>
+      <div class="grid" style="margin-top: 10px">
+        <div><span class="label">Account</span> <span id="me">—</span></div>
+        <div>
+          <span class="label">SEP balance</span> <span id="bal">—</span>
+        </div>
+        <div>
+          <span class="label">CRS balance</span> <span id="crs">—</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Token info card: the big CRS balance plus symbol/decimals/total supply. -->
+    <section class="card">
+      <h2>Token</h2>
+      <p class="label">My CRS balance</p>
+      <p id="my-crs" class="big">—</p>
+      <div class="grid">
+        <div><span class="label">Symbol</span> <span id="t-sym">—</span></div>
+        <div><span class="label">Decimals</span> <span id="t-dec">—</span></div>
+        <div>
+          <span class="label">Total supply</span> <span id="t-sup">—</span>
+        </div>
+      </div>
+      <p class="row">
+        <button id="btn-refresh" disabled>Refresh</button>
+      </p>
+    </section>
+
+    <!-- Transfer card -->
+    <section class="card">
+      <h2>Transfer</h2>
+      <div class="row">
+        <span class="label">To</span>
+        <input
+          id="x-to"
+          type="text"
+          placeholder="0x… recipient"
+          style="width: 380px"
+        />
+        <span class="label">Amount</span>
+        <input
+          id="x-amt"
+          type="number"
+          min="0"
+          step="0.0001"
+          value="1"
+          style="width: 110px"
+        />
+        <button id="btn-xfer" disabled>transfer()</button>
+      </div>
+    </section>
+
+    <!-- Burn card -->
+    <section class="card">
+      <h2>Burn (anyone)</h2>
+      <div class="row">
+        <span class="label">Amount to burn from my balance</span>
+        <input
+          id="burn-amt"
+          type="number"
+          min="0"
+          step="0.0001"
+          value="1"
+          style="width: 110px"
+        />
+        <button id="btn-burn" disabled>burn()</button>
+      </div>
+    </section>
+
+    <!-- Mint card — only usable by the contract owner; styled with a gold edge. -->
+    <section class="card owner-only">
+      <h2>Mint (owner only)</h2>
+      <div class="row">
+        <span class="label">To</span>
+        <input
+          id="m-to"
+          type="text"
+          placeholder="0x… recipient"
+          style="width: 380px"
+        />
+        <span class="label">Amount</span>
+        <input
+          id="m-amt"
+          type="number"
+          min="0"
+          step="1"
+          value="100"
+          style="width: 110px"
+        />
+        <button id="btn-mint" disabled>mint()</button>
+      </div>
+      <p id="mint-hint" class="hint">
+        Connect with the owner account to enable minting.
+      </p>
+    </section>
+
+    <!-- The live activity log (acts as an on-page console). -->
+    <section class="card">
+      <h2>Activity</h2>
+      <pre id="out">Press "Connect MetaMask" to start.</pre>
+    </section>
+
+    <script type="module">
+      import { ethers } from "https://cdnjs.cloudflare.com/ajax/libs/ethers/6.7.0/ethers.min.js";
+
+      // ─── EDIT THIS to your deployed CourseToken address ───
+      const TOKEN = "0xA04c2D660a064dB25282307EaEcC86beef7eFE61";
+      // Separate WebSocket endpoint used ONLY for the live event feed (writes go
+      // through MetaMask's BrowserProvider instead).
+      const SEPOLIA_WSS = "wss://ethereum-sepolia-rpc.publicnode.com";
+
+      const ZERO = ethers.ZeroAddress; // 0x000…0 — sentinel for mint/burn
+
+      // Full ABI subset for this dApp: reads, writes, and the Transfer event.
+      const abi = [
+        "function symbol()                       view returns (string)",
+        "function decimals()                     view returns (uint8)",
+        "function totalSupply()                  view returns (uint256)",
+        "function balanceOf(address account)     view returns (uint256)",
+        "function owner()                        view returns (address)",
+        "function transfer(address to, uint256 amount) returns (bool)",
+        "function mint(address to, uint256 amount)",
+        "function burn(uint256 amount)",
+        "event Transfer(address indexed from, address indexed to, uint256 value)",
+      ];
+
+      // ─── tiny UI helpers ───
+      // Each helper appends a line to the log and auto-scrolls to the bottom so
+      // the newest entry is always visible.
+      const out = document.getElementById("out");
+      function log(m) {
+        out.textContent += m + "\n";
+        out.scrollTop = out.scrollHeight;
+      }
+      function ok(m) {
+        out.innerHTML += `<span class="ok">${m}</span>\n`;
+        out.scrollTop = out.scrollHeight;
+      }
+      function err(m) {
+        out.innerHTML += `<span class="err">${m}</span>\n`;
+        out.scrollTop = out.scrollHeight;
+      }
+      function live(m, cls) {
+        const c = cls || "live";
+        out.innerHTML += `<span class="${c}">${m}</span>\n`;
+        out.scrollTop = out.scrollHeight;
+      }
+      function short(a) {
+        return a.slice(0, 6) + "…" + a.slice(-4);
+      }
+
+      // Update one of the header status badges (text + colour class).
+      function setBadge(elId, text, cls) {
+        const el = document.getElementById(elId);
+        el.textContent = text;
+        el.className = "badge " + (cls || "");
+      }
+
+      // ─── application state ───
+      // provider/signer/token  — the MetaMask side (reads + writes)
+      // wsProvider/wsToken      — the WebSocket side (live event feed)
+      // me/ownerAddr/decimals/symbol — cached values used across handlers
+      let provider, signer, token, wsProvider, wsToken;
+      let me, ownerAddr, decimals, symbol;
+
+      function fmt(value) {
+        return ethers.formatUnits(value, decimals) + " " + symbol;
+      }
+      function classify(from, to) {
+        if (from === ZERO) return "mint";
+        if (to === ZERO) return "burn";
+        return "live";
+      }
+
+      // ─── Connect & bootstrap the whole dApp ───
+      document.getElementById("btn-connect").onclick = async () => {
+        if (!window.ethereum)
+          return err("window.ethereum missing — install MetaMask.");
+        // Note: a placeholder TOKEN sends ethers down the ENS path,
+        // which Sepolia does not support and reports as `UNSUPPORTED_OPERATION`.
+        if (!ethers.isAddress(TOKEN)) {
+          return err(
+            'TOKEN is not a valid address: "' +
+              TOKEN +
+              '". ' +
+              "Edit this file and paste your deployed CourseToken address.",
+          );
+        }
+        try {
+          // MetaMask side: provider → signer → write-capable contract.
+          provider = new ethers.BrowserProvider(window.ethereum);
+          await provider.send("eth_requestAccounts", []);
+          signer = await provider.getSigner();
+          token = new ethers.Contract(TOKEN, abi, signer);
+
+          me = await signer.getAddress();
+          const net = await provider.getNetwork();
+          const eth = await provider.getBalance(me); // native SEP balance (wei)
+
+          // Cache token constants and look up the owner once (parallel reads).
+          [symbol, decimals, ownerAddr] = await Promise.all([
+            token.symbol(),
+            token.decimals(),
+            token.owner(),
+          ]);
+
+          // Fill the connection grid.
+          document.getElementById("me").textContent = short(me);
+          document.getElementById("bal").textContent =
+            ethers.formatEther(eth) + " SEP";
+          document.getElementById("t-sym").textContent = symbol;
+          document.getElementById("t-dec").textContent = decimals.toString();
+
+          // Network badge: green on Sepolia, amber + warning otherwise.
+          setBadge("b-acct", short(me), "ok");
+          if (Number(net.chainId) === 11155111) {
+            setBadge("b-net", "Sepolia", "ok");
+          } else {
+            setBadge("b-net", "chainId " + net.chainId, "warn");
+            err("You are NOT on Sepolia. Switch network in MetaMask.");
+          }
+
+          // Role detection: compare the connected account to the contract owner
+          // (lower-cased, because address strings can differ only by checksum
+          // capitalisation). The mint button is enabled only for the owner —
+          // this is a UI convenience; the CONTRACT still enforces it on-chain.
+          const isOwner = me.toLowerCase() === ownerAddr.toLowerCase();
+          setBadge("b-role", isOwner ? "owner" : "holder", isOwner ? "ok" : "");
+          document.getElementById("mint-hint").textContent = isOwner
+            ? "You are the owner — minting enabled."
+            : "Connected account is not the owner (" + short(ownerAddr) + ").";
+
+          // Enable the action buttons (mint only if owner).
+          document.getElementById("btn-refresh").disabled = false;
+          document.getElementById("btn-xfer").disabled = false;
+          document.getElementById("btn-burn").disabled = false;
+          document.getElementById("btn-mint").disabled = !isOwner;
+
+          ok("Connected. Token: " + symbol + "  (decimals: " + decimals + ")");
+          await refresh(); // load balances/supply
+          startLiveFeed(); // open the WebSocket subscription
+
+          // Rebuild everything if the user switches account/network in MetaMask.
+          window.ethereum.on("accountsChanged", () => location.reload());
+          window.ethereum.on("chainChanged", () => location.reload());
+        } catch (e) {
+          if (e.code === "ACTION_REJECTED" || e.code === 4001)
+            err("You declined the connection.");
+          else err(e.shortMessage || e.message);
+        }
+      };
+
+      // Read the connected account's balance and the total supply, then paint
+      // them into the cards. Called after connecting and after every write, and
+      // also automatically when a live event involves this account.
+      async function refresh() {
+        try {
+          const [bal, sup] = await Promise.all([
+            token.balanceOf(me),
+            token.totalSupply(),
+          ]);
+          const balStr = ethers.formatUnits(bal, decimals);
+          const supStr = ethers.formatUnits(sup, decimals);
+          document.getElementById("my-crs").textContent = balStr + " " + symbol;
+          document.getElementById("crs").textContent = balStr + " " + symbol;
+          document.getElementById("t-sup").textContent = supStr + " " + symbol;
+        } catch (e) {
+          err("Refresh failed: " + (e.shortMessage || e.message));
+        }
+      }
+
+      document.getElementById("btn-refresh").onclick = refresh;
+
+      // ─── transfer() ───
+      document.getElementById("btn-xfer").onclick = async () => {
+        const to = document.getElementById("x-to").value.trim();
+        const amt = document.getElementById("x-amt").value.trim();
+        if (!ethers.isAddress(to)) return err("Bad recipient address.");
+        try {
+          const value = ethers.parseUnits(amt, decimals); // human → base units
+          log("transfer(" + short(to) + ", " + amt + " " + symbol + ") …");
+          const tx = await token.transfer(to, value); // sign + broadcast
+          log("  tx hash:  " + tx.hash);
+          const rcpt = await tx.wait(); // wait for mining
+          ok("  mined in block " + rcpt.blockNumber);
+          await refresh();
+        } catch (e) {
+          handleErr(e);
+        }
+      };
+
+      // ─── burn() ───
+      document.getElementById("btn-burn").onclick = async () => {
+        const amt = document.getElementById("burn-amt").value.trim();
+        try {
+          const value = ethers.parseUnits(amt, decimals);
+          log("burn(" + amt + " " + symbol + ") …");
+          const tx = await token.burn(value);
+          log("  tx hash:  " + tx.hash);
+          const rcpt = await tx.wait();
+          ok("  mined in block " + rcpt.blockNumber);
+          await refresh();
+        } catch (e) {
+          handleErr(e);
+        }
+      };
+
+      // ─── mint() — owner only (button disabled for non-owners) ───
+      document.getElementById("btn-mint").onclick = async () => {
+        const to = document.getElementById("m-to").value.trim();
+        const amt = document.getElementById("m-amt").value.trim();
+        if (!ethers.isAddress(to)) return err("Bad recipient address.");
+        try {
+          const value = ethers.parseUnits(amt, decimals);
+          log("mint(" + short(to) + ", " + amt + " " + symbol + ") …");
+          const tx = await token.mint(to, value);
+          log("  tx hash:  " + tx.hash);
+          const rcpt = await tx.wait();
+          ok("  mined in block " + rcpt.blockNumber);
+          await refresh();
+        } catch (e) {
+          handleErr(e);
+        }
+      };
+
+      // One shared error mapper for all the write handlers above, turning
+      // ethers' stable error codes into friendly, specific messages.
+      function handleErr(e) {
+        switch (e.code) {
+          case "ACTION_REJECTED":
+            err("You declined the transaction.");
+            break;
+          case "INSUFFICIENT_FUNDS":
+            err("Not enough SEP to cover gas.");
+            break;
+          case "CALL_EXCEPTION":
+            err("Contract reverted: " + (e.reason || "unknown"));
+            break;
+          case "NETWORK_ERROR":
+            err("RPC endpoint unreachable. Try again.");
+            break;
+          default:
+            err(e.shortMessage || e.message);
+        }
+      }
+
+      // ─── Live event subscription via a SEPARATE WebSocket Provider ───
+      // We do NOT reuse the MetaMask BrowserProvider for events: injected
+      // providers do not deliver event subscriptions reliably. A dedicated
+      // WebSocketProvider keeps a push connection open just for the feed.
+      function startLiveFeed() {
+        try {
+          wsProvider = new ethers.WebSocketProvider(SEPOLIA_WSS);
+          wsToken = new ethers.Contract(TOKEN, abi, wsProvider);
+          wsToken.on("Transfer", (from, to, value, event) => {
+            const kind = classify(from, to);
+            const label =
+              kind === "mint" ? "MINT" : kind === "burn" ? "BURN" : "XFER";
+            live(
+              `live: [block ${event.log.blockNumber}]  ${label}  ` +
+                `${short(from)} → ${short(to)}  ${fmt(value)}`,
+              kind,
+            );
+            // If THIS account is either side of the transfer, our balance
+            // changed — refresh the cards so the UI stays accurate without the
+            // user pressing "Refresh".
+            if (
+              from.toLowerCase() === me.toLowerCase() ||
+              to.toLowerCase() === me.toLowerCase()
+            ) {
+              refresh();
+            }
+          });
+          log("subscribed to Transfer events over WebSocket.");
+        } catch (e) {
+          err(
+            "WebSocket subscription failed: " + (e.shortMessage || e.message),
+          );
+        }
+      }
+
+      // Clean up the socket when the page unloads so we never leak a connection.
+      window.addEventListener("beforeunload", async () => {
+        if (wsToken) wsToken.removeAllListeners();
+        if (wsProvider) await wsProvider.destroy();
+      });
+    </script>
+  </body>
+</html>

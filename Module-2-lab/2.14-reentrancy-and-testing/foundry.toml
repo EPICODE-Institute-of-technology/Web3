@@ -1,0 +1,12 @@
+# Minimal Foundry config for the Lecture 2.14 test suite.
+# The contract under test (TimedFairRPS.sol) and the tests (RockPaperScissors.t.sol)
+# both live in "reference implementations/".
+#
+# Setup once:   forge install foundry-rs/forge-std --no-commit
+# Run:          forge test -vv
+[profile.default]
+src = "reference implementations"
+test = "reference implementations"
+libs = ["lib"]
+solc = "0.8.20"
+remappings = ["forge-std/=lib/forge-std/src/"]

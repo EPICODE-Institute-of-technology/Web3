@@ -1,0 +1,339 @@
+<!doctype html>
+<!--
+  ============================================================================
+   Call YOUR CourseToken (read + write an ERC-20)
+  ----------------------------------------------------------------------------
+   GOAL
+     Interact with the CourseToken you deployed: read your balance and
+     send three kinds of state-changing transactions — transfer, mint (owner
+     only) and burn.
+
+   NEW CONCEPTS
+     * Binding a Contract to a SIGNER (not just a provider) so its methods can
+       send transactions, not only read.
+     * ethers.parseUnits(amount, decimals) — the token-aware sibling of
+       parseEther; respects the token's own decimals.
+     * Caching immutable values (decimals, symbol) to avoid repeat RPC calls.
+     * Distinguishing read methods (balanceOf) from write methods (transfer,
+       mint, burn) — only writes return a tx you must wait() on.
+
+   BEFORE YOU RUN
+     Set the TOKEN constant below to your deployed CourseToken address. If it is
+     left as the placeholder, the page detects it and tells you what to fix.
+  ============================================================================
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Call your CourseToken from ethers</title>
+    <style>
+      body {
+        font-family: -apple-system, sans-serif;
+        max-width: 720px;
+        margin: 2em auto;
+        padding: 0 1em;
+        color: #222;
+      }
+      h1 {
+        color: #3c3c5f;
+      }
+      input {
+        font-family: Consolas, monospace;
+        font-size: 13px;
+        padding: 6px 10px;
+        width: 60%;
+        border: 1px solid #ccd1db;
+        border-radius: 5px;
+      }
+      button {
+        background: #627eea;
+        color: #fff;
+        border: 0;
+        padding: 7px 14px;
+        border-radius: 5px;
+        font-weight: 600;
+        cursor: pointer;
+        margin-right: 6px;
+      }
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      pre {
+        background: #f3f5fa;
+        padding: 14px;
+        border-radius: 6px;
+        border-left: 4px solid #1abc9c;
+        font-size: 13px;
+        line-height: 1.5;
+        min-height: 140px;
+        white-space: pre-wrap;
+      }
+      .err {
+        color: #d73a49;
+      }
+      .ok {
+        color: #138a64;
+      }
+      .big {
+        font-family: Consolas, monospace;
+        font-size: 28px;
+        color: #3c3c5f;
+        margin: 0.3em 0;
+      }
+      .row {
+        margin: 6px 0;
+      }
+      .lbl {
+        font-size: 12px;
+        color: #8892a0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Call your CourseToken</h1>
+    <p>
+      Read your CRS balance, then transfer, mint or burn tokens through the
+      contract you deployed. Set the <code>TOKEN</code> constant in the
+      script below to your deployed address.
+    </p>
+
+    <button id="btn-connect">Connect wallet</button>
+    <p id="me" style="font-family: Consolas, monospace; font-size: 13px"></p>
+
+    <!-- A "big" read-only display of the connected account's CRS balance. -->
+    <p>My CRS balance: <span id="balance" class="big">—</span></p>
+
+    <div class="row">
+      <button id="btn-refresh" disabled>Refresh balance</button>
+    </div>
+
+    <!-- transfer(): anyone can move their own tokens to another address. -->
+    <div class="row">
+      <span class="lbl">Recipient</span><br />
+      <input id="to-addr" type="text" placeholder="0x… recipient" />
+      <span class="lbl">&nbsp;Amount (CRS)</span>
+      <input
+        id="to-amt"
+        type="number"
+        min="0"
+        step="0.0001"
+        value="1"
+        style="width: 100px"
+      />
+      <button id="btn-transfer" disabled>transfer()</button>
+    </div>
+
+    <!-- mint(): creates new tokens. Restricted to the OWNER by the contract,
+         so a non-owner pressing this will get a revert (CALL_EXCEPTION). -->
+    <div class="row">
+      <span class="lbl">Mint to (owner only)</span><br />
+      <input id="mint-addr" type="text" placeholder="0x… recipient" />
+      <span class="lbl">&nbsp;Amount (CRS)</span>
+      <input
+        id="mint-amt"
+        type="number"
+        min="0"
+        step="1"
+        value="100"
+        style="width: 100px"
+      />
+      <button id="btn-mint" disabled>mint()</button>
+    </div>
+
+    <!-- burn(): destroys tokens from the caller's own balance. -->
+    <div class="row">
+      <span class="lbl">Burn from my balance</span><br />
+      <input
+        id="burn-amt"
+        type="number"
+        min="0"
+        step="0.0001"
+        value="1"
+        style="width: 100px"
+      />
+      <button id="btn-burn" disabled>burn()</button>
+    </div>
+
+    <pre id="out">Connect first.</pre>
+
+    <script type="module">
+      import { ethers } from "https://cdnjs.cloudflare.com/ajax/libs/ethers/6.7.0/ethers.min.js";
+
+      // ─── EDIT THIS to your deployed CourseToken address ───
+      // Leave the placeholder line as a reminder of the format; the active
+      // line below it is the address of the token actually used by this demo.
+      //const TOKEN = "0xPasteYourCourseTokenAddressHere";
+      const TOKEN = "0xd0461C3697fdA3B169201E99fa714D4da5Cc64Ea";
+
+      // A SUBSET of the CourseToken ABI — only the members this page uses.
+      // Read methods are marked `view`; write methods are not. The Transfer
+      // event is included so ethers can decode it from receipts/logs.
+      const abi = [
+        "function symbol()                       view returns (string)",
+        "function decimals()                     view returns (uint8)",
+        "function totalSupply()                  view returns (uint256)",
+        "function balanceOf(address account)     view returns (uint256)",
+        "function owner()                        view returns (address)",
+        "function transfer(address to, uint256 amount) returns (bool)",
+        "function mint(address to, uint256 amount)",
+        "function burn(uint256 amount)",
+        "event Transfer(address indexed from, address indexed to, uint256 value)",
+      ];
+
+      //import abi from "./CourseToken.abi.json" with { type: "json" };
+
+      const out = document.getElementById("out");
+      const log = (m) => {
+        out.textContent += m + "\n";
+      };
+      const ok = (m) => {
+        out.innerHTML += `<span class="ok">${m}</span>\n`;
+      };
+      const errs = (m) => {
+        out.innerHTML += `<span class="err">${m}</span>\n`;
+      };
+
+      // Module-scope state shared by every handler after connecting.
+      //   token   — the Contract object bound to our signer
+      //   decimals/symbol — cached token constants (never change)
+      //   me      — the connected account address
+      let provider, signer, token, decimals, symbol, me;
+
+      // Re-read and display the connected account's balance. Called after
+      // every successful write so the UI stays in sync with the chain.
+      async function refresh() {
+        const bal = await token.balanceOf(me);
+        document.getElementById("balance").textContent =
+          ethers.formatUnits(bal, decimals) + " " + symbol;
+      }
+
+      document.getElementById("btn-connect").onclick = async () => {
+        if (!window.ethereum) return errs("Install MetaMask first.");
+        // Guard against the most common student mistake: forgetting to paste
+        // the deployed address. If TOKEN is not a valid 0x… hex address,
+        // ethers will try to resolve it as an ENS name and Sepolia will
+        // answer with `UNSUPPORTED_OPERATION (operation="getEnsAddress")`,
+        // which is a confusing error message.
+        if (!ethers.isAddress(TOKEN)) {
+          return errs(
+            'TOKEN is not a valid address: "' +
+              TOKEN +
+              '".\n' +
+              "Edit this file and paste your deployed CourseToken address.",
+          );
+        }
+        try {
+          // BrowserProvider → Signer → Contract(token, abi, SIGNER). Because
+          // the runner is a signer (not a provider), the contract can now both
+          // READ and WRITE: transfer/mint/burn will prompt MetaMask to sign.
+          provider = new ethers.BrowserProvider(window.ethereum);
+          await provider.send("eth_requestAccounts", []);
+          signer = await provider.getSigner();
+          token = new ethers.Contract(TOKEN, abi, signer);
+          me = await signer.getAddress();
+
+          // Cache the two values that never change — saves an RPC call
+          // on every refresh.
+          [decimals, symbol] = await Promise.all([
+            token.decimals(),
+            token.symbol(),
+          ]);
+
+          document.getElementById("me").textContent = "Connected as " + me;
+          // Enable the action buttons now that we have a signer + token.
+          document.getElementById("btn-refresh").disabled = false;
+          document.getElementById("btn-transfer").disabled = false;
+          document.getElementById("btn-mint").disabled = false;
+          document.getElementById("btn-burn").disabled = false;
+
+          out.textContent = "";
+          ok("Connected. Token: " + symbol + "  (decimals: " + decimals + ")");
+          await refresh();
+        } catch (e) {
+          errs(e.shortMessage || e.message);
+        }
+      };
+
+      document.getElementById("btn-refresh").onclick = async () => {
+        try {
+          await refresh();
+          ok("Refreshed.");
+        } catch (e) {
+          errs(e.shortMessage || e.message);
+        }
+      };
+
+      // ─── transfer(to, amount) ───
+      document.getElementById("btn-transfer").onclick = async () => {
+        const to = document.getElementById("to-addr").value.trim();
+        const amt = document.getElementById("to-amt").value.trim();
+        if (!ethers.isAddress(to)) return errs("Bad recipient address.");
+        try {
+          // Convert the human amount ("1") into base units using the token's
+          // decimals: parseUnits("1", 18) → 1000000000000000000n.
+          const value = ethers.parseUnits(amt, decimals);
+          log("transfer(" + to + ", " + amt + " " + symbol + ") …");
+          // A write call returns a transaction response as soon as it is
+          // broadcast (MetaMask signs it first). tx.hash is available now…
+          const tx = await token.transfer(to, value);
+          log("  tx hash:  " + tx.hash);
+          // …but the balance only changes once it is mined: wait() blocks
+          // until the receipt arrives.
+          const rcpt = await tx.wait();
+          ok("  mined in block " + rcpt.blockNumber);
+          await refresh();
+        } catch (e) {
+          errs(
+            e.code === "ACTION_REJECTED"
+              ? "You declined."
+              : e.shortMessage || e.message,
+          );
+        }
+      };
+
+      // ─── mint(to, amount) — OWNER ONLY ───
+      document.getElementById("btn-mint").onclick = async () => {
+        const to = document.getElementById("mint-addr").value.trim();
+        const amt = document.getElementById("mint-amt").value.trim();
+        if (!ethers.isAddress(to)) return errs("Bad recipient address.");
+        try {
+          const value = ethers.parseUnits(amt, decimals);
+          log("mint(" + to + ", " + amt + " " + symbol + ") …");
+          const tx = await token.mint(to, value);
+          log("  tx hash:  " + tx.hash);
+          const rcpt = await tx.wait();
+          ok("  mined in block " + rcpt.blockNumber);
+          await refresh();
+        } catch (e) {
+          // If the connected account is NOT the owner, the contract's
+          // onlyOwner check reverts and ethers surfaces a CALL_EXCEPTION.
+          if (e.code === "ACTION_REJECTED") errs("You declined.");
+          else if (e.code === "CALL_EXCEPTION")
+            errs("Reverted (not the owner?).");
+          else errs(e.shortMessage || e.message);
+        }
+      };
+
+      // ─── burn(amount) — destroys YOUR tokens ───
+      document.getElementById("btn-burn").onclick = async () => {
+        const amt = document.getElementById("burn-amt").value.trim();
+        try {
+          const value = ethers.parseUnits(amt, decimals);
+          log("burn(" + amt + " " + symbol + ") …");
+          const tx = await token.burn(value);
+          log("  tx hash:  " + tx.hash);
+          const rcpt = await tx.wait();
+          ok("  mined in block " + rcpt.blockNumber);
+          await refresh();
+        } catch (e) {
+          errs(
+            e.code === "ACTION_REJECTED"
+              ? "You declined."
+              : e.shortMessage || e.message,
+          );
+        }
+      };
+    </script>
+  </body>
+</html>

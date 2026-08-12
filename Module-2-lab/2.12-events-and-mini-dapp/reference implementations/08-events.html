@@ -1,0 +1,278 @@
+<!doctype html>
+<!--
+  ============================================================================
+   Listen to contract EVENTS in real time
+  ----------------------------------------------------------------------------
+   GOAL
+     Subscribe to the CourseToken's `Transfer` event and watch mints, burns and
+     transfers stream onto the page the moment they are mined. Also fetch the
+     recent history of past Transfers with queryFilter.
+
+   NEW CONCEPTS
+     * ethers.WebSocketProvider — a PERSISTENT connection that can PUSH events
+       to us (unlike the request/response JsonRpcProvider used for reads).
+     * contract.on("Transfer", callback) — live subscription; the callback runs
+       once per new matching event.
+     * contract.queryFilter("Transfer", fromBlock, toBlock) — read PAST events.
+     * Reading event arguments (from, to, value) and event.log.blockNumber.
+     * ERC-20 Transfer conventions: mint = from 0x0, burn = to 0x0.
+     * Cleaning up: removeAllListeners() + provider.destroy() to close the socket.
+
+   TIP
+     Open this page while you transact (from the mini-dApp or Remix). Every transfer/mint/burn you do
+     appears here within a couple of seconds.
+  ============================================================================
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Live ERC-20 event listening</title>
+    <style>
+      body {
+        font-family: -apple-system, sans-serif;
+        max-width: 760px;
+        margin: 2em auto;
+        padding: 0 1em;
+        color: #222;
+      }
+      h1 {
+        color: #3c3c5f;
+      }
+      button {
+        background: #627eea;
+        color: #fff;
+        border: 0;
+        padding: 7px 14px;
+        border-radius: 5px;
+        font-weight: 600;
+        cursor: pointer;
+        margin-right: 6px;
+      }
+      pre {
+        background: #f3f5fa;
+        padding: 14px;
+        border-radius: 6px;
+        border-left: 4px solid #1abc9c;
+        font-size: 13px;
+        line-height: 1.5;
+        min-height: 280px;
+        white-space: pre-wrap;
+      }
+      .err {
+        color: #d73a49;
+      }
+      .ok {
+        color: #138a64;
+      }
+      .live {
+        color: #6c44c7;
+        font-weight: 600;
+      }
+      .mint {
+        color: #1abc9c;
+        font-weight: 600;
+      }
+      .burn {
+        color: #d73a49;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Live ERC-20 event listening</h1>
+    <p>
+      A WebSocket Provider lets us subscribe to the <code>Transfer</code> event
+      of the CourseToken in real time. ERC-20 conventions:
+    </p>
+    <ul>
+      <li>
+        <span class="mint">mint</span> &nbsp;= Transfer with
+        <code>from = 0x0…0</code>
+      </li>
+      <li>
+        <span class="burn">burn</span> &nbsp;= Transfer with
+        <code>to = 0x0…0</code>
+      </li>
+      <li><span class="live">transfer</span> = both endpoints non-zero</li>
+    </ul>
+    <p>
+      Open this page side by side with the mini-dApp (or Remix) and watch new events
+      stream in as they are mined.
+    </p>
+
+    <div>
+      <button id="btn-start">Start listening</button>
+      <button id="btn-stop" disabled>Stop</button>
+      <button id="btn-hist" disabled>Show last 100 Transfer events</button>
+    </div>
+    <pre id="out">Idle.</pre>
+
+    <script type="module">
+      import { ethers } from "https://cdnjs.cloudflare.com/ajax/libs/ethers/6.7.0/ethers.min.js";
+
+      // ─── EDIT THIS to your deployed CourseToken address ───
+      //const TOKEN = "0xPasteYourCourseTokenAddressHere";
+      const TOKEN = "0xd0461C3697fdA3B169201E99fa714D4da5Cc64Ea";
+
+      // A WEBSOCKET endpoint (wss://, not https://). A WebSocket keeps a single
+      // long-lived connection open so the node can PUSH new events to us as
+      // they happen — exactly what a live subscription needs. Public endpoints
+      // throttle aggressively; an Alchemy/Infura key is steadier in production.
+      const SEPOLIA_WSS = "wss://ethereum-sepolia-rpc.publicnode.com";
+
+      // The canonical zero address (0x000…000). ERC-20 uses it as the "from"
+      // of a mint and the "to" of a burn. ethers exposes it as a constant.
+      const ZERO = ethers.ZeroAddress;
+
+      // We only need symbol/decimals (to format amounts) and the Transfer
+      // event definition (so ethers can decode incoming logs).
+      const abi = [
+        "function symbol()   view returns (string)",
+        "function decimals() view returns (uint8)",
+        "event Transfer(address indexed from, address indexed to, uint256 value)",
+      ];
+
+      const out = document.getElementById("out");
+      const log = (m) => {
+        out.textContent += m + "\n";
+      };
+      // `live` writes a coloured line; the colour class encodes the event kind.
+      const live = (m, cls) => {
+        const c = cls || "live";
+        out.innerHTML += `<span class="${c}">${m}</span>\n`;
+      };
+      const ok = (m) => {
+        out.innerHTML += `<span class="ok">${m}</span>\n`;
+      };
+      const errs = (m) => {
+        out.innerHTML += `<span class="err">${m}</span>\n`;
+      };
+
+      let provider, token, symbol, decimals;
+
+      // Classify a Transfer by inspecting its endpoints (the ERC-20 convention).
+      function classify(from, to) {
+        if (from === ZERO) return "mint";
+        if (to === ZERO) return "burn";
+        return "live";
+      }
+
+      // Format a raw bigint value using the token's decimals, with the symbol.
+      function fmt(value) {
+        return ethers.formatUnits(value, decimals) + " " + symbol;
+      }
+
+      // Shorten a 42-char address to "0x1234…abcd" for compact display.
+      function short(a) {
+        return a.slice(0, 6) + "…" + a.slice(-4);
+      }
+
+      // ─── START: open the socket and subscribe ───
+      document.getElementById("btn-start").onclick = async () => {
+        // Note: a placeholder TOKEN sends ethers down the ENS path,
+        // which Sepolia does not support and reports as `UNSUPPORTED_OPERATION`.
+        if (!ethers.isAddress(TOKEN)) {
+          return errs(
+            'TOKEN is not a valid address: "' +
+              TOKEN +
+              '".\n' +
+              "Edit this file and paste your deployed CourseToken address.",
+          );
+        }
+        try {
+          // Build a WebSocketProvider, then a read-only Contract bound to it.
+          provider = new ethers.WebSocketProvider(SEPOLIA_WSS);
+          token = new ethers.Contract(TOKEN, abi, provider);
+
+          out.textContent = "";
+          // Read the two formatting constants once before we start streaming.
+          [symbol, decimals] = await Promise.all([
+            token.symbol(),
+            token.decimals(),
+          ]);
+          ok("Subscribed to Transfer events of " + symbol + ". Waiting…");
+
+          // contract.on(eventName, callback) is the LIVE subscription. ethers
+          // decodes each matching log and calls our function with the named
+          // event arguments (from, to, value) plus an `event` object whose
+          // .log carries metadata such as the block number.
+          token.on("Transfer", (from, to, value, event) => {
+            const kind = classify(from, to);
+            const label =
+              kind === "mint"
+                ? "MINT  "
+                : kind === "burn"
+                  ? "BURN  "
+                  : "XFER  ";
+            live(
+              `[block ${event.log.blockNumber}]  ${label}` +
+                `${short(from)} → ${short(to)}  ${fmt(value)}`,
+              kind,
+            );
+          });
+
+          document.getElementById("btn-start").disabled = true;
+          document.getElementById("btn-stop").disabled = false;
+          document.getElementById("btn-hist").disabled = false;
+        } catch (e) {
+          errs("Could not start: " + (e.shortMessage || e.message));
+        }
+      };
+
+      // ─── STOP: unsubscribe and close the socket ───
+      document.getElementById("btn-stop").onclick = async () => {
+        try {
+          // Always remove listeners and destroy the provider when done.
+          // A WebSocket left open leaks a connection and keeps firing callbacks.
+          if (token) token.removeAllListeners();
+          if (provider) await provider.destroy(); // properly close the WebSocket
+          document.getElementById("btn-start").disabled = false;
+          document.getElementById("btn-stop").disabled = true;
+          document.getElementById("btn-hist").disabled = true;
+          ok("Stopped.");
+        } catch (e) {
+          errs(e.shortMessage || e.message);
+        }
+      };
+
+      // ─── HISTORY: read PAST events with queryFilter ───
+      document.getElementById("btn-hist").onclick = async () => {
+        try {
+          // Choose a recent window of blocks. Public RPCs cap how far back a
+          // single getLogs query may scan, so we look at the last ~5000 blocks.
+          const latest = await provider.getBlockNumber();
+          const from = Math.max(0, latest - 5_000); // last ~ 5000 blocks
+          log("Querying historic Transfer events from block " + from + "…");
+          // queryFilter returns an ARRAY of past matching events (not a live
+          // stream). Each element already has decoded .args (from, to, value).
+          const logs = await token.queryFilter("Transfer", from, latest);
+          log("Found " + logs.length + " event(s).");
+          for (const l of logs.slice(-100)) {
+            // print at most 100
+            const kind = classify(l.args.from, l.args.to);
+            const label =
+              kind === "mint"
+                ? "MINT  "
+                : kind === "burn"
+                  ? "BURN  "
+                  : "XFER  ";
+            live(
+              `  [block ${l.blockNumber}]  ${label}` +
+                `${short(l.args.from)} → ${short(l.args.to)}  ${fmt(l.args.value)}`,
+              kind,
+            );
+          }
+        } catch (e) {
+          errs(e.shortMessage || e.message);
+        }
+      };
+
+      // Tear down cleanly when the page unloads (tab closed / navigated away),
+      // so we never leave a dangling WebSocket behind.
+      window.addEventListener("beforeunload", async () => {
+        if (token) token.removeAllListeners();
+        if (provider) await provider.destroy();
+      });
+    </script>
+  </body>
+</html>

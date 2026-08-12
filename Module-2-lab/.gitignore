@@ -1,0 +1,17 @@
+# Build artifacts
+build/
+out/
+cache/
+artifacts/
+# Dependencies
+node_modules/
+lib/
+# Foundry
+broadcast/
+# OS / editor junk
+.DS_Store
+__MACOSX/
+*.swp
+# Echidna / crytic
+crytic-export/
+corpus/

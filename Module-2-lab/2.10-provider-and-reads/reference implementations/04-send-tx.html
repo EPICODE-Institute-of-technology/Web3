@@ -1,0 +1,208 @@
+<!doctype html>
+<!--
+  ============================================================================
+   Send your first transaction (native SEP transfer)
+  ----------------------------------------------------------------------------
+   GOAL
+     WRITE to the chain for the first time. The user enters a recipient and an
+     amount; pressing "Send" pops up MetaMask to confirm; once mined, we report
+     the block number and gas used.
+
+   NEW CONCEPTS
+     * signer.sendTransaction({ to, value }) — submit a value transfer.
+     * ethers.parseEther("0.001") — turn a decimal STRING into a wei bigint.
+     * tx.hash vs tx.wait() — the transaction is BROADCAST immediately (hash),
+       but only CONFIRMED later (wait() resolves with the mined receipt).
+     * Structured error handling by err.code (ACTION_REJECTED, INSUFFICIENT_FUNDS, …).
+
+   KEY IDEA
+     Sending a transaction is a two-stage story:
+       1. sendTransaction → broadcast → you get a tx hash right away.
+       2. tx.wait()       → the network mines it → you get a receipt with the
+          block number, status and gasUsed. Until step 2 it is only "pending".
+  ============================================================================
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Send a Sepolia ETH transaction</title>
+    <style>
+      body {
+        font-family: -apple-system, sans-serif;
+        max-width: 720px;
+        margin: 2em auto;
+        padding: 0 1em;
+        color: #222;
+      }
+      h1 {
+        color: #3c3c5f;
+      }
+      input {
+        font-family: Consolas, monospace;
+        font-size: 13px;
+        padding: 6px 10px;
+        width: 100%;
+        border: 1px solid #ccd1db;
+        border-radius: 5px;
+      }
+      label {
+        display: block;
+        margin: 10px 0 4px 0;
+        font-size: 13px;
+        color: #3c3c5f;
+      }
+      button {
+        background: #627eea;
+        color: #fff;
+        border: 0;
+        padding: 8px 16px;
+        border-radius: 5px;
+        font-weight: 600;
+        cursor: pointer;
+        margin-right: 6px;
+      }
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      pre {
+        background: #f3f5fa;
+        padding: 14px;
+        border-radius: 6px;
+        border-left: 4px solid #1abc9c;
+        font-size: 13px;
+        line-height: 1.5;
+        min-height: 100px;
+        white-space: pre-wrap;
+      }
+      .err {
+        color: #d73a49;
+      }
+      .ok {
+        color: #138a64;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Send a Sepolia ETH transaction</h1>
+    <p>
+      First write to the chain. The Send button triggers a MetaMask
+      confirmation. After acceptance, we wait for the receipt and report the
+      block number.
+    </p>
+
+    <button id="btn-connect">Connect wallet</button>
+    <p id="me" style="font-family: Consolas, monospace; font-size: 13px"></p>
+
+    <label>Recipient (0x…)</label>
+    <input id="to" type="text" placeholder="0x…" />
+    <label>Amount (SEP)</label>
+    <input id="amount" type="text" value="0.001" />
+
+    <p style="margin-top: 1em">
+      <!-- Disabled until a wallet is connected, so the user cannot send before
+         we have a signer. We flip .disabled = false after connecting. -->
+      <button id="btn-send" disabled>Send</button>
+    </p>
+    <pre id="out">Connect the wallet first.</pre>
+
+    <script type="module">
+      import { ethers } from "https://cdnjs.cloudflare.com/ajax/libs/ethers/6.7.0/ethers.min.js";
+
+      const out = document.getElementById("out");
+      const log = (m) => {
+        out.textContent += m + "\n";
+      };
+      const ok = (m) => {
+        out.innerHTML += `<span class="ok">${m}</span>\n`;
+      };
+      const errs = (m) => {
+        out.innerHTML += `<span class="err">${m}</span>\n`;
+      };
+
+      // Declared at module scope (with `let`) so BOTH click handlers can use the
+      // same provider/signer after a single connection.
+      let provider, signer;
+
+      // ─── Step 1: connect (the same connect handshake) ───
+      document.getElementById("btn-connect").onclick = async () => {
+        if (!window.ethereum) return errs("Install MetaMask first.");
+        try {
+          provider = new ethers.BrowserProvider(window.ethereum);
+          await provider.send("eth_requestAccounts", []); // open the MetaMask pop-up
+          signer = await provider.getSigner(); // the account that will pay & sign
+          const me = await signer.getAddress();
+          document.getElementById("me").textContent = "Connected as " + me;
+          document.getElementById("btn-send").disabled = false; // now sending is allowed
+          out.textContent = "";
+          ok("Ready to send.");
+        } catch (e) {
+          errs(
+            e.code === "ACTION_REJECTED"
+              ? "You declined the connection."
+              : e.shortMessage,
+          );
+        }
+      };
+
+      // ─── Step 2: build and send the transaction ───
+      document.getElementById("btn-send").onclick = async () => {
+        const to = document.getElementById("to").value.trim();
+        const amount = document.getElementById("amount").value.trim();
+
+        // Validate inputs in the browser before bothering the wallet/network.
+        if (!ethers.isAddress(to)) return errs("Bad recipient address.");
+        // A tiny regex: digits, optionally followed by a dot and more digits.
+        if (!/^\d+(\.\d+)?$/.test(amount)) return errs("Bad amount.");
+
+        try {
+          // parseEther is the INVERSE of formatEther: it converts the decimal
+          // string "0.001" into the bigint 1000000000000000 (= 0.001 * 10**18)
+          // wei. We must always send amounts in wei; sending a JS float would
+          // lose precision and is rejected by ethers.
+          const value = ethers.parseEther(amount);
+
+          log("Submitting…");
+          // sendTransaction asks the SIGNER (MetaMask) to sign and broadcast a
+          // transfer of `value` wei to `to`. MetaMask shows a confirmation
+          // pop-up here; the Promise resolves once the user approves and the tx
+          // is accepted into the mempool. `tx` is a "transaction response".
+          const tx = await signer.sendTransaction({ to, value });
+          log("TX hash:  " + tx.hash); // exists immediately; tx is now PENDING
+          log("Waiting for the receipt…");
+
+          // wait() resolves only after the transaction is MINED into a block.
+          // The receipt carries the outcome: block number, status, gasUsed.
+          const rcpt = await tx.wait();
+          console.log(rcpt);
+          ok(
+            "Mined in block " +
+              rcpt.blockNumber +
+              "  (gas used: " +
+              rcpt.gasUsed +
+              ")",
+          );
+        } catch (err) {
+          // Different failures deserve different messages. ethers normalises the
+          // common ones to stable string codes on err.code, so we switch on them.
+          switch (err.code) {
+            case "ACTION_REJECTED": // user clicked "Reject"
+              errs("You declined the transaction.");
+              break;
+            case "INSUFFICIENT_FUNDS": // not enough SEP for value + gas
+              errs("Not enough Sepolia ETH to cover gas + value.");
+              break;
+            case "CALL_EXCEPTION": // the call reverted on-chain
+              errs("The transaction reverted: " + (err.reason || "unknown"));
+              break;
+            case "NETWORK_ERROR": // RPC/connectivity problem
+              errs("RPC endpoint unreachable — try again.");
+              break;
+            default: // anything else
+              errs(err.shortMessage || err.message);
+          }
+        }
+      };
+    </script>
+  </body>
+</html>
