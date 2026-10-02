@@ -1,0 +1,29 @@
+# --- Foundry (Solidity labs) ---
+out/
+cache/
+lib/
+broadcast/
+
+# --- Node / Scaffold-ETH ---
+node_modules/
+.yarn/
+dist/
+.next/
+
+# --- Python / Jupyter ---
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# --- Static analysis / fuzzing ---
+crytic-export/
+corpus/
+
+# --- OS / editor / office lock files ---
+.DS_Store
+__MACOSX/
+*.swp
+*~
+.~lock.*#
