@@ -37,6 +37,7 @@ contract CounterMultiManager {
         uint256 units,
         uint256 paid
     );
+    event Withdrawn(address indexed manager, address indexed to, uint256 amount);
 
     // ---------------------------------------------------------
     //  Errors
@@ -44,6 +45,8 @@ contract CounterMultiManager {
     error NotAManager(address caller);
     error ZeroManager();
     error DuplicateManager();
+    error NotTarget(address sender);
+    error WithdrawFailed();
 
     // ---------------------------------------------------------
     //  Access control
@@ -142,5 +145,17 @@ contract CounterMultiManager {
     /// @notice True iff `who` is one of the three configured managers.
     function isManager(address who) external view returns (bool) {
         return who == manager1 || who == manager2 || who == manager3;
+    }
+
+    /// @notice Accepts the refund sent by target.deleteCounter(counterId).
+    receive() external payable {
+        if (msg.sender != address(target)) revert NotTarget(msg.sender);
+    }
+
+    function withdraw(address payable to) external onlyManager {
+        uint256 amount = address(this).balance;
+        (bool ok, ) = to.call{value: amount}("");
+        if (!ok) revert WithdrawFailed();
+        emit Withdrawn(msg.sender, to, amount);
     }
 }

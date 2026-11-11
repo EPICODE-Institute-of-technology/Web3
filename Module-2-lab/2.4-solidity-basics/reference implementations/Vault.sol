@@ -59,9 +59,11 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract Vault is Ownable {
+    error TransferFailed();
+
     constructor(address initialOwner) Ownable(initialOwner) {}
 
     function rescue(IERC20 token, uint256 amount) external onlyOwner {
-        token.transfer(owner(), amount);
+        if (!token.transfer(owner(), amount)) revert TransferFailed();
     }
 }
